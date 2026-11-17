@@ -1,4 +1,4 @@
-name: Guardian Collection iOS
+name: Guardian Collection iOS 0.2.1
 
 on:
   workflow_dispatch:
@@ -12,12 +12,12 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+
       - name: Download and prepare the game
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/guardian"
           app="$work/Payload/GuardianCollection.app"
-          cd "$RUNNER_TEMP"
           mkdir -p "$app/Game/Build"
           cd "$app/Game"
           base="https://html.itch.zone/html/17714303/Build"
@@ -43,7 +43,6 @@ jobs:
                   downloaded.unlink()
               else:
                   downloaded.replace(output)
-              print(output, output.stat().st_size, "bytes")
 
           for name, signature, size in [
               ("WebGL.data", b"UnityWebData1.0", 198382141),
@@ -53,6 +52,7 @@ jobs:
               with file.open("rb") as stream:
                   if stream.read(len(signature)) != signature or file.stat().st_size != size:
                       raise SystemExit(f"Incomplete or different Unity build: {file}")
+
           with Path("../Info.plist").open("wb") as output:
               plistlib.dump({
                   "CFBundleIdentifier": "dev.negelinho.guardian.collection",
@@ -60,10 +60,16 @@ jobs:
                   "CFBundleDisplayName": "Guardian Collection",
                   "CFBundleName": "GuardianCollection",
                   "CFBundlePackageType": "APPL",
-                  "CFBundleVersion": "2",
-                  "CFBundleShortVersionString": "0.2.0",
+                  "CFBundleVersion": "3",
+                  "CFBundleShortVersionString": "0.2.1",
                   "MinimumOSVersion": "16.4",
                   "LSRequiresIPhoneOS": True,
+                  "NSAppTransportSecurity": {
+                      "NSAllowsLocalNetworking": True,
+                      "NSExceptionDomains": {
+                          "127.0.0.1": {"NSExceptionAllowsInsecureHTTPLoads": True},
+                      },
+                  },
                   "UIDeviceFamily": [1],
                   "UIRequiresFullScreen": True,
                   "UILaunchScreen": {},
@@ -73,6 +79,7 @@ jobs:
                   ],
               }, output)
           PY
+
           printf '%s  %s\n' 'abb1587ba4291b60dfe2c6531dcef64a88889400087c183027c30fa3dec24409' 'Build/WebGL.data' | shasum -a 256 -c -
           unzip -q "$GITHUB_WORKSPACE/guardian-locales.zip" -d Build
           for lang in ru uk; do
@@ -123,10 +130,43 @@ jobs:
               <button data-code="Escape">Esc</button>
             </div>
           </div>
+          <script src="startup.js"></script>
           <script src="Build/WebGL.loader.js"></script>
           <script src="touch.js"></script>
           </html>
           HTML
+
+          cat > startup.js <<'STARTUP'
+          const loadingNotice = document.getElementById("status");
+          let unityReady = false;
+
+          function guardianStage(text) {
+            window.webkit?.messageHandlers?.guardianStage?.postMessage(text);
+          }
+
+          function guardianError(code, text) {
+            const message = code + ": " + String(text).slice(0, 420);
+            loadingNotice.textContent = message;
+            loadingNotice.hidden = false;
+            guardianStage(message);
+          }
+
+          guardianStage("HTML loaded, starting Unity scripts");
+          window.addEventListener("error", event => {
+            if (unityReady) return;
+            if (event.target instanceof HTMLScriptElement) {
+              guardianError("G04", "Script unavailable: " + new URL(event.target.src).pathname);
+            } else {
+              guardianError("G04", event.message || "JavaScript startup error");
+            }
+          }, true);
+          window.addEventListener("unhandledrejection", event => {
+            if (!unityReady) guardianError("G04", event.reason);
+          });
+          document.getElementById("unity-canvas").addEventListener("webglcontextlost", () => {
+            guardianError("G06", "WebGL context lost.");
+          });
+          STARTUP
 
           cat > touch.js <<'JS'
           const canvas = document.getElementById("unity-canvas");
@@ -135,7 +175,13 @@ jobs:
           const pad = document.getElementById("pad");
           const buttons = document.getElementById("buttons");
           const picker = document.getElementById("language");
-          const phrases = {"en": ["Loading", "Unity error", "Touch", "Run", "Light", "Pause"], "ru": ["\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430", "\u041e\u0448\u0438\u0431\u043a\u0430 Unity", "\u0421\u0435\u043d\u0441\u043e\u0440", "\u0411\u0435\u0433", "\u0421\u0432\u0435\u0442", "\u041f\u0430\u0443\u0437\u0430"], "uk": ["\u0417\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0435\u043d\u043d\u044f", "\u041f\u043e\u043c\u0438\u043b\u043a\u0430 Unity", "\u0421\u0435\u043d\u0441\u043e\u0440", "\u0411\u0456\u0433", "\u0421\u0432\u0456\u0442\u043b\u043e", "\u041f\u0430\u0443\u0437\u0430"]};
+          const phrases = {
+            en: ["Loading", "Unity error", "Touch", "Run", "Light", "Pause"],
+            ru: ["\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430", "\u041e\u0448\u0438\u0431\u043a\u0430 Unity",
+                 "\u0421\u0435\u043d\u0441\u043e\u0440", "\u0411\u0435\u0433", "\u0421\u0432\u0435\u0442", "\u041f\u0430\u0443\u0437\u0430"],
+            uk: ["\u0417\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0435\u043d\u043d\u044f", "\u041f\u043e\u043c\u0438\u043b\u043a\u0430 Unity",
+                 "\u0421\u0435\u043d\u0441\u043e\u0440", "\u0411\u0456\u0433", "\u0421\u0432\u0456\u0442\u043b\u043e", "\u041f\u0430\u0443\u0437\u0430"]
+          };
           const requestedLanguage = new URLSearchParams(location.search).get("lang");
           const language = ["en","ru","uk"].includes(requestedLanguage) ? requestedLanguage : "en";
           const [loadingText, errorText, touchText, runText, lightText, pauseText] = phrases[language];
@@ -152,15 +198,17 @@ jobs:
             if (bridge) bridge.postMessage(next);
             else {
               const url = new URL(location.href);
-              url.searchParams.set("lang",next);
+              url.searchParams.set("lang", next);
               location.assign(url.href);
             }
           });
+
           const keys = {
             KeyW:["w",87], KeyA:["a",65], KeyS:["s",83], KeyD:["d",68],
             KeyF:["f",70], ShiftLeft:["Shift",16], Escape:["Escape",27]
           };
           const held = new Map();
+
           function sendKey(code, down) {
             const [key, number] = keys[code];
             const event = new KeyboardEvent(down ? "keydown" : "keyup", {
@@ -169,12 +217,15 @@ jobs:
             Object.defineProperties(event, {keyCode:{value:number}, which:{value:number}});
             canvas.dispatchEvent(event);
           }
+
           function release(code) {
             if (held.delete(code)) sendKey(code, false);
           }
+
           function releaseAll() {
             for (const code of held.keys()) release(code);
           }
+
           for (const button of controls.querySelectorAll("[data-code]")) {
             const code = button.dataset.code;
             button.addEventListener("pointerdown", event => {
@@ -182,8 +233,8 @@ jobs:
               if (held.has(code)) return;
               canvas.focus();
               button.setPointerCapture(event.pointerId);
-              held.set(code,event.pointerId);
-              sendKey(code,true);
+              held.set(code, event.pointerId);
+              sendKey(code, true);
             });
             for (const type of ["pointerup","pointercancel","lostpointercapture"]) {
               button.addEventListener(type, event => {
@@ -195,10 +246,11 @@ jobs:
             releaseAll();
             pad.hidden = buttons.hidden = !pad.hidden;
           };
-          window.addEventListener("blur",releaseAll);
-          document.addEventListener("visibilitychange",() => { if (document.hidden) releaseAll(); });
+          window.addEventListener("blur", releaseAll);
+          document.addEventListener("visibilitychange", () => {
+            if (document.hidden) releaseAll();
+          });
 
-          // Supply the cursor-lock state Unity expects while swipes act as mouse motion.
           let locked = false;
           const setLock = value => {
             if (locked === value) return;
@@ -207,11 +259,12 @@ jobs:
           };
           canvas.requestPointerLock = document.body.requestPointerLock = () => setLock(true);
           document.exitPointerLock = () => setLock(false);
-          Object.defineProperty(document,"pointerLockElement",{get:() => locked ? canvas : null});
+          Object.defineProperty(document, "pointerLockElement", {get:() => locked ? canvas : null});
+
           let look = null;
           canvas.addEventListener("pointerdown", event => {
             if (event.pointerType === "touch" && look === null && !pad.hidden) {
-              look = {id:event.pointerId,x:event.clientX,y:event.clientY};
+              look = {id:event.pointerId, x:event.clientX, y:event.clientY};
               canvas.setPointerCapture(event.pointerId);
             }
           });
@@ -229,10 +282,14 @@ jobs:
             canvas.dispatchEvent(move);
           });
           for (const type of ["pointerup","pointercancel","lostpointercapture"]) {
-            canvas.addEventListener(type, event => { if (look?.id === event.pointerId) look = null; });
+            canvas.addEventListener(type, event => {
+              if (look?.id === event.pointerId) look = null;
+            });
           }
 
-          createUnityInstance(canvas,{
+          let progressCheckpoint = -1;
+          guardianStage("Starting Unity WebGL");
+          createUnityInstance(canvas, {
             dataUrl:language === "en" ? "Build/WebGL.data" : "Build/WebGL-" + language + ".data",
             frameworkUrl:"Build/WebGL.framework.js",
             codeUrl:"Build/WebGL.wasm",
@@ -240,17 +297,30 @@ jobs:
             companyName:"DefaultCompany",
             productName:"Slendytubbies Guardian Collection",
             productVersion:"0.1",
-            devicePixelRatio:1,
+            devicePixelRatio:0.75,
+            showBanner:(message, kind) => {
+              if (kind === "error") guardianError("G05", message);
+            },
             cacheControl:() => "no-store"
           }, progress => {
-            loadStatus.textContent = loadingText + ": " + Math.round(progress * 100) + "%";
+            const percent = Math.round(progress * 100);
+            loadStatus.textContent = loadingText + ": " + percent + "%";
+            const checkpoint = Math.floor(percent / 10);
+            if (checkpoint !== progressCheckpoint) {
+              progressCheckpoint = checkpoint;
+              guardianStage("Unity loading " + percent + "%");
+            }
           }).then(() => {
+            unityReady = true;
+            guardianStage("Unity initialized");
             loadStatus.hidden = true;
             controls.hidden = false;
           }).catch(error => {
-            loadStatus.textContent = errorText + "\n" + error;
+            guardianError("G05", errorText + "\n" + error);
           });
           JS
+
+          node --check startup.js
           node --check touch.js
 
       - name: Build and package the IPA
@@ -258,132 +328,132 @@ jobs:
           set -euo pipefail
           cd "$RUNNER_TEMP/guardian"
           app="$PWD/Payload/GuardianCollection.app"
+
           cat > Host.m <<'OBJC'
           #import <UIKit/UIKit.h>
           #import <WebKit/WebKit.h>
 
-          static NSArray<NSString *> *supportedLanguages(void) {
-              return @[@"en", @"ru", @"uk"];
-          }
+          unsigned short StartGameServer(const char *root);
 
-          static NSURLRequest *GameRequest(NSString *chosen) {
-              NSString *language = [supportedLanguages() containsObject:chosen ?: @""] ? chosen : @"en";
-              NSString *address = [@"guardian://localhost/index.html?lang=" stringByAppendingString:language];
-              return [NSURLRequest requestWithURL:[NSURL URLWithString:address]];
-          }
-
-          @interface GameFiles : NSObject <WKURLSchemeHandler, WKScriptMessageHandler>
+          @interface GameView : UIViewController <WKNavigationDelegate, WKScriptMessageHandler>
+          @property (nonatomic,strong) UILabel *startup;
+          @property (nonatomic,copy) NSString *stage;
+          @property (nonatomic) unsigned short port;
           @end
 
-          @implementation GameFiles
-          - (NSArray<NSArray *> *)segmentsForFile:(NSURL *)file {
-              NSString *name = file.lastPathComponent;
-              NSDictionary *variant = @{@"WebGL-ru.data":@"locale-ru.json", @"WebGL-uk.data":@"locale-uk.json"};
-              NSString *manifestName = variant[name];
-              if (manifestName == nil) {
-                  NSData *bytes = [NSData dataWithContentsOfURL:file options:NSDataReadingMappedIfSafe error:NULL];
-                  return bytes ? @[@[bytes, @0, @(bytes.length)]] : @[];
-              }
+          @interface GameMessages : NSObject <WKScriptMessageHandler>
+          @property (nonatomic,weak) GameView *target;
+          @end
 
-              NSURL *directory = [file URLByDeletingLastPathComponent];
-              NSData *manifest = [NSData dataWithContentsOfURL:[directory URLByAppendingPathComponent:manifestName]];
-              if (!manifest) return @[];
-              NSArray *parts = [NSJSONSerialization JSONObjectWithData:manifest options:0 error:NULL];
-              if (![parts isKindOfClass:NSArray.class] || parts.count != 4) return @[];
-              NSArray *allowed = @[@"WebGL.data", @"locale-ru.head", @"locale-ru.tail",
-                                  @"locale-uk.head", @"locale-uk.tail"];
-              NSMutableArray *segments = [NSMutableArray array];
-              NSMutableDictionary *opened = [NSMutableDictionary dictionary];
-              for (NSArray *part in parts) {
-                  if (![part isKindOfClass:NSArray.class] || part.count != 3 ||
-                      ![allowed containsObject:part[0]] || ![part[1] isKindOfClass:NSNumber.class] ||
-                      ![part[2] isKindOfClass:NSNumber.class]) return @[];
-                  NSData *bytes = opened[part[0]];
-                  if (!bytes) {
-                      NSURL *url = [directory URLByAppendingPathComponent:part[0]];
-                      bytes = [NSData dataWithContentsOfURL:url options:NSDataReadingMappedIfSafe error:NULL];
-                      if (!bytes) return @[];
-                      opened[part[0]] = bytes;
-                  }
-                  NSUInteger start = [part[1] unsignedIntegerValue];
-                  NSUInteger length = [part[2] unsignedIntegerValue];
-                  if (start > bytes.length || length > bytes.length - start) return @[];
-                  [segments addObject:@[bytes, part[1], part[2]]];
-              }
-              return segments;
-          }
-
-          - (void)webView:(WKWebView *)view startURLSchemeTask:(id<WKURLSchemeTask>)task {
-              NSURL *url = task.request.URL;
-              NSString *relative = [url.path substringFromIndex:MIN(url.path.length, 1)];
-              NSURL *root = [[NSBundle mainBundle].resourceURL URLByAppendingPathComponent:@"Game" isDirectory:YES];
-              NSURL *file = [[root URLByAppendingPathComponent:relative ?: @"index.html"] URLByStandardizingPath];
-              NSString *prefix = [root.path stringByAppendingString:@"/"];
-              NSArray<NSArray *> *segments = @[];
-              if ([url.host isEqualToString:@"localhost"] && [file.path hasPrefix:prefix]) {
-                  segments = [self segmentsForFile:file];
-              }
-              NSUInteger total = 0;
-              for (NSArray *segment in segments) total += [segment[2] unsignedIntegerValue];
-              NSDictionary *types = @{@"html":@"text/html; charset=utf-8",
-                                      @"js":@"text/javascript; charset=utf-8",
-                                      @"wasm":@"application/wasm"};
-              NSDictionary *headers = @{
-                  @"Content-Type":types[file.pathExtension] ?: @"application/octet-stream",
-                  @"Content-Length":[NSString stringWithFormat:@"%lu", (unsigned long)total],
-                  @"Access-Control-Allow-Origin":@"*"
-              };
-              NSInteger status = segments.count ? 200 : 404;
-              NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:url
-                  statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:headers];
-              [task didReceiveResponse:response];
-              if (![task.request.HTTPMethod isEqualToString:@"HEAD"]) {
-                  for (NSArray *segment in segments) {
-                      NSData *bytes = segment[0];
-                      NSUInteger offset = [segment[1] unsignedIntegerValue];
-                      NSUInteger remaining = [segment[2] unsignedIntegerValue];
-                      while (remaining) {
-                          @autoreleasepool {
-                              NSUInteger length = MIN(1024*1024, remaining);
-                              [task didReceiveData:[bytes subdataWithRange:NSMakeRange(offset, length)]];
-                              offset += length;
-                              remaining -= length;
-                          }
-                      }
-                  }
-              }
-              [task didFinish];
-          }
-
-          - (void)webView:(WKWebView *)view stopURLSchemeTask:(id<WKURLSchemeTask>)task {}
-
+          @implementation GameMessages
           - (void)userContentController:(WKUserContentController *)controller didReceiveScriptMessage:(WKScriptMessage *)message {
-              if (!message.frameInfo.isMainFrame || ![message.body isKindOfClass:NSString.class] ||
-                  ![supportedLanguages() containsObject:message.body]) return;
-              [NSUserDefaults.standardUserDefaults setObject:message.body forKey:@"guardianLanguage"];
-              [message.webView loadRequest:GameRequest(message.body)];
+              [self.target userContentController:controller didReceiveScriptMessage:message];
           }
           @end
 
-          @interface GameView : UIViewController
-          @end
           @implementation GameView
+          - (NSURLRequest *)requestForLanguage:(NSString *)value {
+              NSArray *languages = @[@"en", @"ru", @"uk"];
+              NSString *language = [languages containsObject:value ?: @""] ? value : @"en";
+              NSString *url = [NSString stringWithFormat:@"http://127.0.0.1:%u/index.html?lang=%@", self.port, language];
+              return [NSURLRequest requestWithURL:[NSURL URLWithString:url]
+                                    cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:45];
+          }
+
+          - (void)showStartup:(NSString *)text {
+              self.startup.text = text;
+              self.startup.hidden = NO;
+          }
+
           - (void)loadView {
+              UIView *root = [UIView new];
+              root.backgroundColor = UIColor.blackColor;
+              self.view = root;
+              UILabel *startup = [UILabel new];
+              startup.numberOfLines = 0;
+              startup.textAlignment = NSTextAlignmentCenter;
+              startup.textColor = UIColor.whiteColor;
+              startup.backgroundColor = UIColor.blackColor;
+              startup.font = [UIFont monospacedSystemFontOfSize:16 weight:UIFontWeightRegular];
+              startup.translatesAutoresizingMaskIntoConstraints = NO;
+              [root addSubview:startup];
+              [NSLayoutConstraint activateConstraints:@[
+                  [startup.centerYAnchor constraintEqualToAnchor:root.centerYAnchor],
+                  [startup.leadingAnchor constraintEqualToAnchor:root.safeAreaLayoutGuide.leadingAnchor constant:16],
+                  [startup.trailingAnchor constraintEqualToAnchor:root.safeAreaLayoutGuide.trailingAnchor constant:-16]
+              ]];
+              self.startup = startup;
+              self.stage = @"Starting local game server";
+              [self showStartup:self.stage];
+              NSURL *folder = [[NSBundle mainBundle].resourceURL URLByAppendingPathComponent:@"Game"];
+              self.port = StartGameServer(folder.path.fileSystemRepresentation);
+              if (!self.port) {
+                  [self showStartup:@"G01: Could not start the local game server."];
+                  return;
+              }
+
               WKWebViewConfiguration *config = [WKWebViewConfiguration new];
               config.allowsInlineMediaPlayback = YES;
               config.mediaTypesRequiringUserActionForPlayback = WKAudiovisualMediaTypeNone;
-              GameFiles *files = [GameFiles new];
-              [config setURLSchemeHandler:files forURLScheme:@"guardian"];
-              [config.userContentController addScriptMessageHandler:files name:@"guardianLanguage"];
-              WKWebView *view = [[WKWebView alloc] initWithFrame:CGRectZero configuration:config];
-              view.opaque = NO;
-              view.backgroundColor = UIColor.blackColor;
-              view.scrollView.scrollEnabled = NO;
-              view.scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
-              self.view = view;
+              GameMessages *messages = [GameMessages new];
+              messages.target = self;
+              [config.userContentController addScriptMessageHandler:messages name:@"guardianLanguage"];
+              [config.userContentController addScriptMessageHandler:messages name:@"guardianStage"];
+              WKWebView *web = [[WKWebView alloc] initWithFrame:CGRectZero configuration:config];
+              web.navigationDelegate = self;
+              web.opaque = NO;
+              web.backgroundColor = UIColor.blackColor;
+              web.scrollView.scrollEnabled = NO;
+              web.scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+              web.translatesAutoresizingMaskIntoConstraints = NO;
+              [root insertSubview:web belowSubview:startup];
+              [NSLayoutConstraint activateConstraints:@[
+                  [web.leadingAnchor constraintEqualToAnchor:root.leadingAnchor],
+                  [web.trailingAnchor constraintEqualToAnchor:root.trailingAnchor],
+                  [web.topAnchor constraintEqualToAnchor:root.topAnchor],
+                  [web.bottomAnchor constraintEqualToAnchor:root.bottomAnchor]
+              ]];
+              self.stage = @"Opening game page";
+              [self showStartup:self.stage];
               NSString *language = [NSUserDefaults.standardUserDefaults stringForKey:@"guardianLanguage"];
-              [view loadRequest:GameRequest(language)];
+              [web loadRequest:[self requestForLanguage:language]];
           }
+
+          - (void)userContentController:(WKUserContentController *)controller didReceiveScriptMessage:(WKScriptMessage *)message {
+              NSURL *origin = message.frameInfo.request.URL;
+              if (!message.frameInfo.isMainFrame || ![origin.host isEqualToString:@"127.0.0.1"] ||
+                  origin.port.unsignedShortValue != self.port ||
+                  ![message.body isKindOfClass:NSString.class]) return;
+              NSString *value = message.body;
+              if ([message.name isEqualToString:@"guardianStage"]) {
+                  self.stage = [value substringToIndex:MIN(value.length,180)];
+                  return;
+              }
+              if ([@[@"en", @"ru", @"uk"] containsObject:value]) {
+                  [NSUserDefaults.standardUserDefaults setObject:value forKey:@"guardianLanguage"];
+                  self.stage = @"Changing game language";
+                  [self showStartup:self.stage];
+                  [message.webView loadRequest:[self requestForLanguage:value]];
+              }
+          }
+
+          - (void)webView:(WKWebView *)web didFinishNavigation:(WKNavigation *)navigation {
+              self.startup.hidden = YES;
+          }
+
+          - (void)webView:(WKWebView *)web didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+              if (error.code == NSURLErrorCancelled) return;
+              [self showStartup:[NSString stringWithFormat:@"G02: Game page failed (%ld).\n%@", (long)error.code, error.localizedDescription]];
+          }
+
+          - (void)webView:(WKWebView *)web didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+              [self webView:web didFailProvisionalNavigation:navigation withError:error];
+          }
+
+          - (void)webViewWebContentProcessDidTerminate:(WKWebView *)web {
+              [self showStartup:[NSString stringWithFormat:@"G03: WebKit stopped.\nLast stage: %@", self.stage ?: @"unknown"]];
+          }
+
           - (BOOL)prefersStatusBarHidden { return YES; }
           - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
           @end
@@ -391,6 +461,7 @@ jobs:
           @interface GameDelegate : UIResponder <UIApplicationDelegate>
           @property (nonatomic,strong) UIWindow *window;
           @end
+
           @implementation GameDelegate
           - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)options {
               self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
@@ -401,14 +472,275 @@ jobs:
           @end
 
           int main(int argc, char *argv[]) {
-              @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(GameDelegate.class)); }
+              @autoreleasepool { return UIApplicationMain(argc,argv,nil,NSStringFromClass(GameDelegate.class)); }
           }
           OBJC
 
+          cat > LocalServer.c <<'SERVER'
+          #include <arpa/inet.h>
+          #include <errno.h>
+          #include <limits.h>
+          #include <netinet/in.h>
+          #include <pthread.h>
+          #include <stdbool.h>
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <strings.h>
+          #include <sys/socket.h>
+          #include <sys/time.h>
+          #include <unistd.h>
+
+          typedef struct {
+              const char *file;
+              long offset;
+              long length;
+          } GamePart;
+
+          typedef struct {
+              const char *path;
+              const char *mime;
+              const GamePart *parts;
+              size_t count;
+          } GameRoute;
+
+          #include "GameRoutes.inc"
+
+          static char gameRoot[PATH_MAX];
+          static unsigned short serverPort;
+
+          static bool sendAll(int socket, const void *buffer, size_t length) {
+              const char *cursor = buffer;
+              while (length) {
+          #ifdef MSG_NOSIGNAL
+                  ssize_t count = send(socket, cursor, length, MSG_NOSIGNAL);
+          #else
+                  ssize_t count = send(socket, cursor, length, 0);
+          #endif
+                  if (count < 0 && errno == EINTR) continue;
+                  if (count <= 0) return false;
+                  cursor += count;
+                  length -= (size_t)count;
+              }
+              return true;
+          }
+
+          static bool sendHeaders(int socket, const char *status, const char *mime, long length) {
+              char text[512];
+              int count = snprintf(text, sizeof(text),
+                  "HTTP/1.1 %s\r\nContent-Type: %s\r\nContent-Length: %ld\r\n"
+                  "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",
+                  status, mime, length);
+              return count > 0 && (size_t)count < sizeof(text) && sendAll(socket,text,(size_t)count);
+          }
+
+          static bool allowedHost(const char *request) {
+              const char *line = strstr(request, "\r\n");
+              char expected[64];
+              snprintf(expected, sizeof(expected), "Host: 127.0.0.1:%u", serverPort);
+              size_t length = strlen(expected);
+              while (line && line[2] && line[2] != '\r') {
+                  line += 2;
+                  const char *end = strstr(line, "\r\n");
+                  if (!end) return false;
+                  if ((size_t)(end - line) == length && strncasecmp(line,expected,length) == 0) return true;
+                  line = end;
+              }
+              return false;
+          }
+
+          static void serve(int socket) {
+              struct timeval timeout = {.tv_sec=15};
+              setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+              setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+          #ifdef SO_NOSIGPIPE
+              int enabled = 1;
+              setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled));
+          #endif
+              char request[8192] = {0};
+              size_t used = 0;
+              while (used < sizeof(request)-1 && !strstr(request,"\r\n\r\n")) {
+                  ssize_t got = recv(socket,request+used,sizeof(request)-1-used,0);
+                  if (got <= 0) return;
+                  used += (size_t)got;
+                  request[used] = '\0';
+              }
+              char method[8], path[384], version[16];
+              if (!strstr(request,"\r\n\r\n") || !allowedHost(request) ||
+                  sscanf(request,"%7s %383s %15s",method,path,version) != 3 ||
+                  strncmp(version,"HTTP/1.",7) != 0) {
+                  sendHeaders(socket,"400 Bad Request","text/plain",0);
+                  return;
+              }
+              bool head = strcmp(method,"HEAD") == 0;
+              if (!head && strcmp(method,"GET") != 0) {
+                  sendHeaders(socket,"405 Method Not Allowed","text/plain",0);
+                  return;
+              }
+              path[strcspn(path,"?")] = '\0';
+              const GameRoute *route = NULL;
+              for (size_t index=0; index < sizeof(routes)/sizeof(routes[0]); ++index) {
+                  if (strcmp(path,routes[index].path) == 0) {
+                      route = &routes[index];
+                      break;
+                  }
+              }
+              if (!route) {
+                  sendHeaders(socket,"404 Not Found","text/plain",0);
+                  return;
+              }
+              long total = 0;
+              for (size_t index=0; index<route->count; ++index) total += route->parts[index].length;
+              if (!sendHeaders(socket,"200 OK",route->mime,total) || head) return;
+              char buffer[64*1024];
+              for (size_t index=0; index<route->count; ++index) {
+                  const GamePart *part = &route->parts[index];
+                  char filename[PATH_MAX];
+                  int count = snprintf(filename,sizeof(filename),"%s/%s",gameRoot,part->file);
+                  if (count < 0 || (size_t)count >= sizeof(filename)) return;
+                  FILE *file = fopen(filename,"rb");
+                  if (!file) return;
+                  if (fseek(file,part->offset,SEEK_SET) != 0) {
+                      fclose(file);
+                      return;
+                  }
+                  long left = part->length;
+                  while (left) {
+                      size_t capacity = left < (long)sizeof(buffer) ? (size_t)left : sizeof(buffer);
+                      size_t amount = fread(buffer,1,capacity,file);
+                      if (!amount || !sendAll(socket,buffer,amount)) {
+                          fclose(file);
+                          return;
+                      }
+                      left -= (long)amount;
+                  }
+                  fclose(file);
+              }
+          }
+
+          static void *serveConnection(void *argument) {
+              int client = *(int *)argument;
+              free(argument);
+              serve(client);
+              close(client);
+              return NULL;
+          }
+
+          static void *acceptConnections(void *argument) {
+              int listener = *(int *)argument;
+              free(argument);
+              while (true) {
+                  int client = accept(listener,NULL,NULL);
+                  if (client < 0) {
+                      if (errno == EINTR) continue;
+                      break;
+                  }
+                  int *descriptor = malloc(sizeof(*descriptor));
+                  if (!descriptor) {
+                      close(client);
+                      continue;
+                  }
+                  *descriptor = client;
+                  pthread_t worker;
+                  if (pthread_create(&worker,NULL,serveConnection,descriptor) != 0) {
+                      free(descriptor);
+                      close(client);
+                      continue;
+                  }
+                  pthread_detach(worker);
+              }
+              close(listener);
+              return NULL;
+          }
+
+          unsigned short StartGameServer(const char *root) {
+              if (serverPort) return serverPort;
+              if (!root || strlen(root) >= sizeof(gameRoot)) return 0;
+              strcpy(gameRoot,root);
+              int listener = socket(AF_INET,SOCK_STREAM,0);
+              if (listener < 0) return 0;
+              struct sockaddr_in address = {0};
+          #ifdef __APPLE__
+              address.sin_len = sizeof(address);
+          #endif
+              address.sin_family = AF_INET;
+              address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+              socklen_t size = sizeof(address);
+              if (bind(listener,(struct sockaddr *)&address,size) != 0 ||
+                  listen(listener,16) != 0 ||
+                  getsockname(listener,(struct sockaddr *)&address,&size) != 0) {
+                  close(listener);
+                  return 0;
+              }
+              int *descriptor = malloc(sizeof(*descriptor));
+              if (!descriptor) {
+                  close(listener);
+                  return 0;
+              }
+              *descriptor = listener;
+              serverPort = ntohs(address.sin_port);
+              pthread_t worker;
+              if (pthread_create(&worker,NULL,acceptConnections,descriptor) != 0) {
+                  free(descriptor);
+                  close(listener);
+                  serverPort = 0;
+                  return 0;
+              }
+              pthread_detach(worker);
+              return serverPort;
+          }
+          SERVER
+
+          cat > route_table.py <<'ROUTES'
+          import json
+          import sys
+          from pathlib import Path
+
+          game = Path(sys.argv[1])
+          output = Path(sys.argv[2])
+          specs = [
+              ("index.html", "text/html; charset=utf-8"),
+              ("startup.js", "text/javascript; charset=utf-8"),
+              ("touch.js", "text/javascript; charset=utf-8"),
+              ("Build/WebGL.loader.js", "text/javascript; charset=utf-8"),
+              ("Build/WebGL.framework.js", "text/javascript; charset=utf-8"),
+              ("Build/WebGL.wasm", "application/wasm"),
+              ("Build/WebGL.data", "application/octet-stream"),
+          ]
+          routes = [(name, mime, [(name, 0, (game / name).stat().st_size)]) for name, mime in specs]
+          for lang in ("ru", "uk"):
+              segments = json.loads((game / f"Build/locale-{lang}.json").read_text())
+              if len(segments) != 4:
+                  raise ValueError("Invalid language segment list")
+              parts = []
+              for name, offset, length in segments:
+                  if name not in {"WebGL.data", f"locale-{lang}.head", f"locale-{lang}.tail"}:
+                      raise ValueError("Invalid language segment filename")
+                  filename = f"Build/{name}"
+                  size = (game / filename).stat().st_size
+                  if not (0 <= offset <= size and 0 <= length <= size - offset):
+                      raise ValueError("Invalid language segment range")
+                  parts.append((filename, offset, length))
+              routes.append((f"Build/WebGL-{lang}.data", "application/octet-stream", parts))
+
+          lines = []
+          for index, (_, _, parts) in enumerate(routes):
+              lines.append(f"static const GamePart file{index}[] = {{")
+              for name, offset, length in parts:
+                  lines.append(f"    {{{json.dumps(name)}, {offset}, {length}}},")
+              lines.append("};")
+          lines.append("static const GameRoute routes[] = {")
+          for index, (name, mime, parts) in enumerate(routes):
+              lines.append(f"    {{{json.dumps('/' + name)}, {json.dumps(mime)}, file{index}, {len(parts)}}},")
+          lines.append("};")
+          output.write_text("\n".join(lines) + "\n", encoding="ascii")
+          ROUTES
+
+          python3 route_table.py "$app/Game" GameRoutes.inc
           plutil -lint "$app/Info.plist"
           sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
           xcrun --sdk iphoneos clang -target arm64-apple-ios16.4 -isysroot "$sdk" \
-            -fobjc-arc Host.m -framework Foundation -framework UIKit \
+            -fobjc-arc Host.m LocalServer.c -framework Foundation -framework UIKit \
             -framework WebKit -framework CoreGraphics -o "$app/GuardianCollection"
           codesign --force --sign - "$app"
           codesign --verify --strict "$app"
