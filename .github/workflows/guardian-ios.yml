@@ -1,0 +1,314 @@
+name: Guardian Collection iOS
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - name: Download and prepare the game
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/guardian"
+          app="$work/Payload/GuardianCollection.app"
+          cd "$RUNNER_TEMP"
+          mkdir -p "$app/Game/Build"
+          cd "$app/Game"
+          base="https://html.itch.zone/html/17714303/Build"
+          curl -fLsS --retry 3 --max-time 420 "$base/WebGL.loader.js" -o Build/WebGL.loader.js
+          for part in data framework.js wasm; do
+            curl -fLsS --retry 3 --max-time 420 "$base/WebGL.$part.gz" -o "Build/$part.download"
+          done
+
+          python3 - <<'PY'
+          import gzip
+          import plistlib
+          import shutil
+          from pathlib import Path
+
+          for part in ("data", "framework.js", "wasm"):
+              downloaded = Path("Build") / (part + ".download")
+              output = Path("Build") / ("WebGL." + part)
+              with downloaded.open("rb") as stream:
+                  compressed = stream.read(2) == b"\x1f\x8b"
+              if compressed:
+                  with gzip.open(downloaded, "rb") as source, output.open("wb") as target:
+                      shutil.copyfileobj(source, target)
+                  downloaded.unlink()
+              else:
+                  downloaded.replace(output)
+              print(output, output.stat().st_size, "bytes")
+
+          for name, signature, size in [
+              ("WebGL.data", b"UnityWebData1.0", 198382141),
+              ("WebGL.wasm", b"\0asm", 50876350),
+          ]:
+              file = Path("Build") / name
+              with file.open("rb") as stream:
+                  if stream.read(len(signature)) != signature or file.stat().st_size != size:
+                      raise SystemExit(f"Incomplete or different Unity build: {file}")
+          with Path("../Info.plist").open("wb") as output:
+              plistlib.dump({
+                  "CFBundleIdentifier": "dev.negelinho.guardian.collection",
+                  "CFBundleExecutable": "GuardianCollection",
+                  "CFBundleDisplayName": "Guardian Collection",
+                  "CFBundleName": "GuardianCollection",
+                  "CFBundlePackageType": "APPL",
+                  "CFBundleVersion": "1",
+                  "CFBundleShortVersionString": "0.1.0",
+                  "MinimumOSVersion": "16.4",
+                  "LSRequiresIPhoneOS": True,
+                  "UIDeviceFamily": [1],
+                  "UIRequiresFullScreen": True,
+                  "UILaunchScreen": {},
+                  "UISupportedInterfaceOrientations": [
+                      "UIInterfaceOrientationLandscapeLeft",
+                      "UIInterfaceOrientationLandscapeRight",
+                  ],
+              }, output)
+          PY
+
+          cat > index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+          <title>Guardian Collection</title>
+          <style>
+            body { margin:0; background:#000; color:#fff; font:16px system-ui; overflow:hidden }
+            canvas { display:block; width:100vw; height:100vh; touch-action:none }
+            [hidden] { display:none !important }
+            #status { position:fixed; inset:0; display:grid; place-items:center; white-space:pre-wrap; padding:20px }
+            #pad { position:fixed; left:max(12px,env(safe-area-inset-left)); bottom:14px; display:grid;
+                   grid-template-columns:repeat(3,42px); gap:3px }
+            #buttons { position:fixed; right:max(12px,env(safe-area-inset-right)); bottom:14px; display:grid; gap:5px }
+            #toggle { position:fixed; top:10px; left:max(12px,env(safe-area-inset-left)) }
+            button { min-height:40px; min-width:42px; color:#fff; background:#181818b8;
+                     border:1px solid #888; border-radius:7px; touch-action:none; user-select:none }
+            button:active { background:#565656 }
+          </style>
+          <canvas id="unity-canvas" tabindex="0"></canvas>
+          <div id="status">Loading Guardian Collection...</div>
+          <div id="controls" hidden>
+            <button id="toggle">Touch</button>
+            <div id="pad">
+              <span></span><button data-code="KeyW">W</button><span></span>
+              <button data-code="KeyA">A</button><button data-code="KeyS">S</button><button data-code="KeyD">D</button>
+            </div>
+            <div id="buttons">
+              <button data-code="ShiftLeft">Run</button>
+              <button data-code="KeyF">Light</button>
+              <button data-code="Escape">Esc</button>
+            </div>
+          </div>
+          <script src="Build/WebGL.loader.js"></script>
+          <script src="touch.js"></script>
+          </html>
+          HTML
+
+          cat > touch.js <<'JS'
+          const canvas = document.getElementById("unity-canvas");
+          const loadStatus = document.getElementById("status");
+          const controls = document.getElementById("controls");
+          const pad = document.getElementById("pad");
+          const buttons = document.getElementById("buttons");
+          const keys = {
+            KeyW:["w",87], KeyA:["a",65], KeyS:["s",83], KeyD:["d",68],
+            KeyF:["f",70], ShiftLeft:["Shift",16], Escape:["Escape",27]
+          };
+          const held = new Map();
+          function sendKey(code, down) {
+            const [key, number] = keys[code];
+            const event = new KeyboardEvent(down ? "keydown" : "keyup", {
+              code, key, bubbles:true, cancelable:true, shiftKey:held.has("ShiftLeft")
+            });
+            Object.defineProperties(event, {keyCode:{value:number}, which:{value:number}});
+            canvas.dispatchEvent(event);
+          }
+          function release(code) {
+            if (held.delete(code)) sendKey(code, false);
+          }
+          function releaseAll() {
+            for (const code of held.keys()) release(code);
+          }
+          for (const button of controls.querySelectorAll("[data-code]")) {
+            const code = button.dataset.code;
+            button.addEventListener("pointerdown", event => {
+              event.preventDefault();
+              if (held.has(code)) return;
+              canvas.focus();
+              button.setPointerCapture(event.pointerId);
+              held.set(code,event.pointerId);
+              sendKey(code,true);
+            });
+            for (const type of ["pointerup","pointercancel","lostpointercapture"]) {
+              button.addEventListener(type, event => {
+                if (held.get(code) === event.pointerId) release(code);
+              });
+            }
+          }
+          document.getElementById("toggle").onclick = () => {
+            releaseAll();
+            pad.hidden = buttons.hidden = !pad.hidden;
+          };
+          window.addEventListener("blur",releaseAll);
+          document.addEventListener("visibilitychange",() => { if (document.hidden) releaseAll(); });
+
+          // Supply the cursor-lock state Unity expects while swipes act as mouse motion.
+          let locked = false;
+          const setLock = value => {
+            if (locked === value) return;
+            locked = value;
+            document.dispatchEvent(new Event("pointerlockchange"));
+          };
+          canvas.requestPointerLock = document.body.requestPointerLock = () => setLock(true);
+          document.exitPointerLock = () => setLock(false);
+          Object.defineProperty(document,"pointerLockElement",{get:() => locked ? canvas : null});
+          let look = null;
+          canvas.addEventListener("pointerdown", event => {
+            if (event.pointerType === "touch" && look === null && !pad.hidden) {
+              look = {id:event.pointerId,x:event.clientX,y:event.clientY};
+              canvas.setPointerCapture(event.pointerId);
+            }
+          });
+          canvas.addEventListener("pointermove", event => {
+            if (look?.id !== event.pointerId || pad.hidden) return;
+            const move = new MouseEvent("mousemove", {
+              bubbles:true, cancelable:true, clientX:event.clientX, clientY:event.clientY
+            });
+            Object.defineProperties(move, {
+              movementX:{value:Math.round(event.clientX-look.x)},
+              movementY:{value:Math.round(event.clientY-look.y)}
+            });
+            look.x = event.clientX;
+            look.y = event.clientY;
+            canvas.dispatchEvent(move);
+          });
+          for (const type of ["pointerup","pointercancel","lostpointercapture"]) {
+            canvas.addEventListener(type, event => { if (look?.id === event.pointerId) look = null; });
+          }
+
+          createUnityInstance(canvas,{
+            dataUrl:"Build/WebGL.data",
+            frameworkUrl:"Build/WebGL.framework.js",
+            codeUrl:"Build/WebGL.wasm",
+            streamingAssetsUrl:"StreamingAssets",
+            companyName:"DefaultCompany",
+            productName:"Slendytubbies Guardian Collection",
+            productVersion:"0.1",
+            devicePixelRatio:1,
+            cacheControl:() => "no-store"
+          }, progress => {
+            loadStatus.textContent = "Loading: " + Math.round(progress * 100) + "%";
+          }).then(() => {
+            loadStatus.hidden = true;
+            controls.hidden = false;
+          }).catch(error => {
+            loadStatus.textContent = "Unity error\n" + error;
+          });
+          JS
+          node --check touch.js
+
+      - name: Build and package the IPA
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/guardian"
+          app="$PWD/Payload/GuardianCollection.app"
+          cat > Host.m <<'OBJC'
+          #import <UIKit/UIKit.h>
+          #import <WebKit/WebKit.h>
+
+          @interface GameFiles : NSObject <WKURLSchemeHandler>
+          @end
+          @implementation GameFiles
+          - (void)webView:(WKWebView *)view startURLSchemeTask:(id<WKURLSchemeTask>)task {
+              NSURL *url = task.request.URL;
+              NSString *relative = [url.path substringFromIndex:MIN(url.path.length, 1)];
+              NSURL *root = [[NSBundle mainBundle].resourceURL URLByAppendingPathComponent:@"Game" isDirectory:YES];
+              NSURL *file = [[root URLByAppendingPathComponent:relative ?: @"index.html"] URLByStandardizingPath];
+              NSString *prefix = [root.path stringByAppendingString:@"/"];
+              NSData *bytes = nil;
+              if ([url.host isEqualToString:@"localhost"] && [file.path hasPrefix:prefix]) {
+                  bytes = [NSData dataWithContentsOfURL:file options:NSDataReadingMappedIfSafe error:NULL];
+              }
+              NSDictionary *types = @{@"html":@"text/html; charset=utf-8",
+                                      @"js":@"text/javascript; charset=utf-8",
+                                      @"wasm":@"application/wasm"};
+              NSDictionary *headers = @{
+                  @"Content-Type":types[file.pathExtension] ?: @"application/octet-stream",
+                  @"Content-Length":[NSString stringWithFormat:@"%lu", (unsigned long)bytes.length],
+                  @"Access-Control-Allow-Origin":@"*"
+              };
+              NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:url
+                  statusCode:bytes ? 200 : 404 HTTPVersion:@"HTTP/1.1" headerFields:headers];
+              [task didReceiveResponse:response];
+              if (![task.request.HTTPMethod isEqualToString:@"HEAD"]) {
+                  for (NSUInteger offset=0; offset<bytes.length;) {
+                      @autoreleasepool {
+                          NSUInteger count=MIN(1024*1024, bytes.length-offset);
+                          [task didReceiveData:[bytes subdataWithRange:NSMakeRange(offset,count)]];
+                          offset+=count;
+                      }
+                  }
+              }
+              [task didFinish];
+          }
+          - (void)webView:(WKWebView *)view stopURLSchemeTask:(id<WKURLSchemeTask>)task {}
+          @end
+
+          @interface GameView : UIViewController
+          @end
+          @implementation GameView
+          - (void)loadView {
+              WKWebViewConfiguration *config = [WKWebViewConfiguration new];
+              config.allowsInlineMediaPlayback = YES;
+              config.mediaTypesRequiringUserActionForPlayback = WKAudiovisualMediaTypeNone;
+              [config setURLSchemeHandler:[GameFiles new] forURLScheme:@"guardian"];
+              WKWebView *view = [[WKWebView alloc] initWithFrame:CGRectZero configuration:config];
+              view.opaque = NO;
+              view.backgroundColor = UIColor.blackColor;
+              view.scrollView.scrollEnabled = NO;
+              view.scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+              self.view = view;
+              [view loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:@"guardian://localhost/index.html"]]];
+          }
+          - (BOOL)prefersStatusBarHidden { return YES; }
+          - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
+          @end
+
+          @interface GameDelegate : UIResponder <UIApplicationDelegate>
+          @property (nonatomic,strong) UIWindow *window;
+          @end
+          @implementation GameDelegate
+          - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)options {
+              self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+              self.window.rootViewController = [GameView new];
+              [self.window makeKeyAndVisible];
+              return YES;
+          }
+          @end
+
+          int main(int argc, char *argv[]) {
+              @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(GameDelegate.class)); }
+          }
+          OBJC
+
+          plutil -lint "$app/Info.plist"
+          sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
+          xcrun --sdk iphoneos clang -target arm64-apple-ios16.4 -isysroot "$sdk" \
+            -fobjc-arc Host.m -framework Foundation -framework UIKit \
+            -framework WebKit -framework CoreGraphics -o "$app/GuardianCollection"
+          codesign --force --sign - "$app"
+          codesign --verify --strict "$app"
+          zip -qry Guardian-Collection-iOS.ipa Payload
+          unzip -tq Guardian-Collection-iOS.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Guardian-Collection-iOS
+          path: ${{ runner.temp }}/guardian/Guardian-Collection-iOS.ipa
+          if-no-files-found: error
