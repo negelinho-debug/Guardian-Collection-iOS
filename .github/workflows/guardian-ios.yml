@@ -3,13 +3,15 @@ name: Guardian Collection iOS
 on:
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: macos-26
     timeout-minutes: 25
     steps:
+      - uses: actions/checkout@v4
       - name: Download and prepare the game
         run: |
           set -euo pipefail
@@ -58,8 +60,8 @@ jobs:
                   "CFBundleDisplayName": "Guardian Collection",
                   "CFBundleName": "GuardianCollection",
                   "CFBundlePackageType": "APPL",
-                  "CFBundleVersion": "1",
-                  "CFBundleShortVersionString": "0.1.0",
+                  "CFBundleVersion": "2",
+                  "CFBundleShortVersionString": "0.2.0",
                   "MinimumOSVersion": "16.4",
                   "LSRequiresIPhoneOS": True,
                   "UIDeviceFamily": [1],
@@ -71,6 +73,13 @@ jobs:
                   ],
               }, output)
           PY
+          printf '%s  %s\n' 'abb1587ba4291b60dfe2c6531dcef64a88889400087c183027c30fa3dec24409' 'Build/WebGL.data' | shasum -a 256 -c -
+          unzip -q "$GITHUB_WORKSPACE/guardian-locales.zip" -d Build
+          for lang in ru uk; do
+            for part in head tail json; do
+              test -s "Build/locale-$lang.$part"
+            done
+          done
 
           cat > index.html <<'HTML'
           <!doctype html>
@@ -90,9 +99,18 @@ jobs:
             button { min-height:40px; min-width:42px; color:#fff; background:#181818b8;
                      border:1px solid #888; border-radius:7px; touch-action:none; user-select:none }
             button:active { background:#565656 }
+            #language { position:fixed; z-index:3; top:10px;
+                        right:max(12px,env(safe-area-inset-right));
+                        min-height:36px; padding:4px 8px; color:#fff;
+                        background:#181818; border:1px solid #888; border-radius:7px }
           </style>
           <canvas id="unity-canvas" tabindex="0"></canvas>
           <div id="status">Loading Guardian Collection...</div>
+          <select id="language" aria-label="Language">
+            <option value="en">English</option>
+            <option value="ru">&#1056;&#1091;&#1089;&#1089;&#1082;&#1080;&#1081;</option>
+            <option value="uk">&#1059;&#1082;&#1088;&#1072;&#1111;&#1085;&#1089;&#1100;&#1082;&#1072;</option>
+          </select>
           <div id="controls" hidden>
             <button id="toggle">Touch</button>
             <div id="pad">
@@ -116,6 +134,28 @@ jobs:
           const controls = document.getElementById("controls");
           const pad = document.getElementById("pad");
           const buttons = document.getElementById("buttons");
+          const picker = document.getElementById("language");
+          const phrases = {"en": ["Loading", "Unity error", "Touch", "Run", "Light", "Pause"], "ru": ["\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430", "\u041e\u0448\u0438\u0431\u043a\u0430 Unity", "\u0421\u0435\u043d\u0441\u043e\u0440", "\u0411\u0435\u0433", "\u0421\u0432\u0435\u0442", "\u041f\u0430\u0443\u0437\u0430"], "uk": ["\u0417\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0435\u043d\u043d\u044f", "\u041f\u043e\u043c\u0438\u043b\u043a\u0430 Unity", "\u0421\u0435\u043d\u0441\u043e\u0440", "\u0411\u0456\u0433", "\u0421\u0432\u0456\u0442\u043b\u043e", "\u041f\u0430\u0443\u0437\u0430"]};
+          const requestedLanguage = new URLSearchParams(location.search).get("lang");
+          const language = ["en","ru","uk"].includes(requestedLanguage) ? requestedLanguage : "en";
+          const [loadingText, errorText, touchText, runText, lightText, pauseText] = phrases[language];
+          document.documentElement.lang = language;
+          loadStatus.textContent = loadingText + ": 0%";
+          document.getElementById("toggle").textContent = touchText;
+          controls.querySelector('[data-code="ShiftLeft"]').textContent = runText;
+          controls.querySelector('[data-code="KeyF"]').textContent = lightText;
+          controls.querySelector('[data-code="Escape"]').textContent = pauseText;
+          picker.value = language;
+          picker.addEventListener("change", () => {
+            const next = picker.value;
+            const bridge = window.webkit?.messageHandlers?.guardianLanguage;
+            if (bridge) bridge.postMessage(next);
+            else {
+              const url = new URL(location.href);
+              url.searchParams.set("lang",next);
+              location.assign(url.href);
+            }
+          });
           const keys = {
             KeyW:["w",87], KeyA:["a",65], KeyS:["s",83], KeyD:["d",68],
             KeyF:["f",70], ShiftLeft:["Shift",16], Escape:["Escape",27]
@@ -193,7 +233,7 @@ jobs:
           }
 
           createUnityInstance(canvas,{
-            dataUrl:"Build/WebGL.data",
+            dataUrl:language === "en" ? "Build/WebGL.data" : "Build/WebGL-" + language + ".data",
             frameworkUrl:"Build/WebGL.framework.js",
             codeUrl:"Build/WebGL.wasm",
             streamingAssetsUrl:"StreamingAssets",
@@ -203,12 +243,12 @@ jobs:
             devicePixelRatio:1,
             cacheControl:() => "no-store"
           }, progress => {
-            loadStatus.textContent = "Loading: " + Math.round(progress * 100) + "%";
+            loadStatus.textContent = loadingText + ": " + Math.round(progress * 100) + "%";
           }).then(() => {
             loadStatus.hidden = true;
             controls.hidden = false;
           }).catch(error => {
-            loadStatus.textContent = "Unity error\n" + error;
+            loadStatus.textContent = errorText + "\n" + error;
           });
           JS
           node --check touch.js
@@ -222,42 +262,107 @@ jobs:
           #import <UIKit/UIKit.h>
           #import <WebKit/WebKit.h>
 
-          @interface GameFiles : NSObject <WKURLSchemeHandler>
+          static NSArray<NSString *> *supportedLanguages(void) {
+              return @[@"en", @"ru", @"uk"];
+          }
+
+          static NSURLRequest *GameRequest(NSString *chosen) {
+              NSString *language = [supportedLanguages() containsObject:chosen ?: @""] ? chosen : @"en";
+              NSString *address = [@"guardian://localhost/index.html?lang=" stringByAppendingString:language];
+              return [NSURLRequest requestWithURL:[NSURL URLWithString:address]];
+          }
+
+          @interface GameFiles : NSObject <WKURLSchemeHandler, WKScriptMessageHandler>
           @end
+
           @implementation GameFiles
+          - (NSArray<NSArray *> *)segmentsForFile:(NSURL *)file {
+              NSString *name = file.lastPathComponent;
+              NSDictionary *variant = @{@"WebGL-ru.data":@"locale-ru.json", @"WebGL-uk.data":@"locale-uk.json"};
+              NSString *manifestName = variant[name];
+              if (manifestName == nil) {
+                  NSData *bytes = [NSData dataWithContentsOfURL:file options:NSDataReadingMappedIfSafe error:NULL];
+                  return bytes ? @[@[bytes, @0, @(bytes.length)]] : @[];
+              }
+
+              NSURL *directory = [file URLByDeletingLastPathComponent];
+              NSData *manifest = [NSData dataWithContentsOfURL:[directory URLByAppendingPathComponent:manifestName]];
+              if (!manifest) return @[];
+              NSArray *parts = [NSJSONSerialization JSONObjectWithData:manifest options:0 error:NULL];
+              if (![parts isKindOfClass:NSArray.class] || parts.count != 4) return @[];
+              NSArray *allowed = @[@"WebGL.data", @"locale-ru.head", @"locale-ru.tail",
+                                  @"locale-uk.head", @"locale-uk.tail"];
+              NSMutableArray *segments = [NSMutableArray array];
+              NSMutableDictionary *opened = [NSMutableDictionary dictionary];
+              for (NSArray *part in parts) {
+                  if (![part isKindOfClass:NSArray.class] || part.count != 3 ||
+                      ![allowed containsObject:part[0]] || ![part[1] isKindOfClass:NSNumber.class] ||
+                      ![part[2] isKindOfClass:NSNumber.class]) return @[];
+                  NSData *bytes = opened[part[0]];
+                  if (!bytes) {
+                      NSURL *url = [directory URLByAppendingPathComponent:part[0]];
+                      bytes = [NSData dataWithContentsOfURL:url options:NSDataReadingMappedIfSafe error:NULL];
+                      if (!bytes) return @[];
+                      opened[part[0]] = bytes;
+                  }
+                  NSUInteger start = [part[1] unsignedIntegerValue];
+                  NSUInteger length = [part[2] unsignedIntegerValue];
+                  if (start > bytes.length || length > bytes.length - start) return @[];
+                  [segments addObject:@[bytes, part[1], part[2]]];
+              }
+              return segments;
+          }
+
           - (void)webView:(WKWebView *)view startURLSchemeTask:(id<WKURLSchemeTask>)task {
               NSURL *url = task.request.URL;
               NSString *relative = [url.path substringFromIndex:MIN(url.path.length, 1)];
               NSURL *root = [[NSBundle mainBundle].resourceURL URLByAppendingPathComponent:@"Game" isDirectory:YES];
               NSURL *file = [[root URLByAppendingPathComponent:relative ?: @"index.html"] URLByStandardizingPath];
               NSString *prefix = [root.path stringByAppendingString:@"/"];
-              NSData *bytes = nil;
+              NSArray<NSArray *> *segments = @[];
               if ([url.host isEqualToString:@"localhost"] && [file.path hasPrefix:prefix]) {
-                  bytes = [NSData dataWithContentsOfURL:file options:NSDataReadingMappedIfSafe error:NULL];
+                  segments = [self segmentsForFile:file];
               }
+              NSUInteger total = 0;
+              for (NSArray *segment in segments) total += [segment[2] unsignedIntegerValue];
               NSDictionary *types = @{@"html":@"text/html; charset=utf-8",
                                       @"js":@"text/javascript; charset=utf-8",
                                       @"wasm":@"application/wasm"};
               NSDictionary *headers = @{
                   @"Content-Type":types[file.pathExtension] ?: @"application/octet-stream",
-                  @"Content-Length":[NSString stringWithFormat:@"%lu", (unsigned long)bytes.length],
+                  @"Content-Length":[NSString stringWithFormat:@"%lu", (unsigned long)total],
                   @"Access-Control-Allow-Origin":@"*"
               };
+              NSInteger status = segments.count ? 200 : 404;
               NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:url
-                  statusCode:bytes ? 200 : 404 HTTPVersion:@"HTTP/1.1" headerFields:headers];
+                  statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:headers];
               [task didReceiveResponse:response];
               if (![task.request.HTTPMethod isEqualToString:@"HEAD"]) {
-                  for (NSUInteger offset=0; offset<bytes.length;) {
-                      @autoreleasepool {
-                          NSUInteger count=MIN(1024*1024, bytes.length-offset);
-                          [task didReceiveData:[bytes subdataWithRange:NSMakeRange(offset,count)]];
-                          offset+=count;
+                  for (NSArray *segment in segments) {
+                      NSData *bytes = segment[0];
+                      NSUInteger offset = [segment[1] unsignedIntegerValue];
+                      NSUInteger remaining = [segment[2] unsignedIntegerValue];
+                      while (remaining) {
+                          @autoreleasepool {
+                              NSUInteger length = MIN(1024*1024, remaining);
+                              [task didReceiveData:[bytes subdataWithRange:NSMakeRange(offset, length)]];
+                              offset += length;
+                              remaining -= length;
+                          }
                       }
                   }
               }
               [task didFinish];
           }
+
           - (void)webView:(WKWebView *)view stopURLSchemeTask:(id<WKURLSchemeTask>)task {}
+
+          - (void)userContentController:(WKUserContentController *)controller didReceiveScriptMessage:(WKScriptMessage *)message {
+              if (!message.frameInfo.isMainFrame || ![message.body isKindOfClass:NSString.class] ||
+                  ![supportedLanguages() containsObject:message.body]) return;
+              [NSUserDefaults.standardUserDefaults setObject:message.body forKey:@"guardianLanguage"];
+              [message.webView loadRequest:GameRequest(message.body)];
+          }
           @end
 
           @interface GameView : UIViewController
@@ -267,14 +372,17 @@ jobs:
               WKWebViewConfiguration *config = [WKWebViewConfiguration new];
               config.allowsInlineMediaPlayback = YES;
               config.mediaTypesRequiringUserActionForPlayback = WKAudiovisualMediaTypeNone;
-              [config setURLSchemeHandler:[GameFiles new] forURLScheme:@"guardian"];
+              GameFiles *files = [GameFiles new];
+              [config setURLSchemeHandler:files forURLScheme:@"guardian"];
+              [config.userContentController addScriptMessageHandler:files name:@"guardianLanguage"];
               WKWebView *view = [[WKWebView alloc] initWithFrame:CGRectZero configuration:config];
               view.opaque = NO;
               view.backgroundColor = UIColor.blackColor;
               view.scrollView.scrollEnabled = NO;
               view.scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
               self.view = view;
-              [view loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:@"guardian://localhost/index.html"]]];
+              NSString *language = [NSUserDefaults.standardUserDefaults stringForKey:@"guardianLanguage"];
+              [view loadRequest:GameRequest(language)];
           }
           - (BOOL)prefersStatusBarHidden { return YES; }
           - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
